@@ -3,10 +3,14 @@
 [![CI](https://github.com/microsoft/GPv1-Retirement-Cost-Estimator/actions/workflows/ci.yml/badge.svg)](https://github.com/microsoft/GPv1-Retirement-Cost-Estimator/actions/workflows/ci.yml)
 [![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fmicrosoft%2FGPv1-Retirement-Cost-Estimator%2Fmain%2Finfra%2Fazuredeploy.json)
 
-> **If the Deploy to Azure button shows a download error**, the repository may not yet be publicly accessible. Download [`infra/azuredeploy.json`](./infra/azuredeploy.json) manually, then open the [Azure Portal custom deployment editor](https://portal.azure.com/#create/Microsoft.Template), choose **Build your own template in the editor**, and paste the file contents there.
+> **If the Deploy to Azure button shows a download error**, the repository may not yet be publicly accessible. Download [`infra/azuredeploy.json`](./infra/azuredeploy.json) manually, then open the [Azure custom deployment blade](https://portal.azure.com/#create/Microsoft.Template) and upload the file.
 
 Azure-hostable web app for estimating the billing impact of upgrading Azure Storage GPv1 accounts to GPv2 using public Azure list pricing.
 
+> [!IMPORTANT]
+> This tool is an estimator only. It uses public list pricing and modeled assumptions to compare GPv1 and GPv2 costs, so results are directional and actual charges may vary. Actual costs can differ based on factors such as discounts, negotiated pricing, taxes, credits, reservations, support plans, marketplace charges, and other customer-specific billing conditions.
+
+> [!TIP]
 > 📖 **Ready to deploy?** See [docs/deployment.md](./docs/deployment.md) for all deployment options including one-click Azure deployment, manual ARM template deployment, and GitHub Actions setup.
 
 ## Deployment
@@ -20,7 +24,8 @@ To enable the automated deploy workflow after forking:
 3. In your GitHub repository, go to **Settings → Secrets and variables → Actions** and add a secret named `AZURE_STATIC_WEB_APPS_API_TOKEN` with that token.
 4. Push to `main` or trigger the Deploy workflow manually.
 
-See [docs/deployment.md](./docs/deployment.md) for full deployment options.
+> [!TIP]
+> See [docs/deployment.md](./docs/deployment.md) for full deployment options.
 
 ## What It Does
 
@@ -79,6 +84,5 @@ The repository includes two GitHub Actions workflows:
 - **CI** (`.github/workflows/ci.yml`) — runs on every push and pull request to `main`. Runs tests, typecheck, lint, build, and a production dependency audit. No secrets required.
 - **Deploy** (`.github/workflows/deploy.yml`) — runs on every push to `main` and can be triggered manually. Deploys to Azure Static Web Apps.
 
-## Important Limits
-
-This app is an estimator. It does not model taxes, credits, reservations, support plans, marketplace charges, private negotiated pricing, or customer-specific billing APIs. Discounts are modeled only when entered by the user.
+> [!IMPORTANT]
+> This app is an estimator. It does not model taxes, credits, reservations, support plans, marketplace charges, private negotiated pricing, or customer-specific billing APIs. Discounts are modeled only when provided by the user, and results should be validated against actual Azure billing data before being used for planning or customer commitments.
