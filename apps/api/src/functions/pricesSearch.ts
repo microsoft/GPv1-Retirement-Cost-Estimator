@@ -24,6 +24,7 @@ function toSearchRequest(request: HttpRequest): PricingSearchRequest {
     product: stringParam(request, "product"),
     skuName: stringParam(request, "skuName"),
     meterName: stringParam(request, "meterName"),
+    meterId: stringParam(request, "meterId"),
     unit: stringParam(request, "unit"),
     redundancy: stringParam(request, "redundancy") as PricingSearchRequest["redundancy"],
     accessTier: stringParam(request, "accessTier") as PricingSearchRequest["accessTier"],
@@ -57,6 +58,9 @@ function validateSearchRequest(search: PricingSearchRequest): string[] {
   if (!/^[A-Z]{3}$/.test(search.currency)) errors.push("Currency must be a three-letter ISO code.");
   if (search.redundancy && !allowedRedundancies.has(search.redundancy)) errors.push("Unsupported redundancy.");
   if (search.accessTier && !allowedAccessTiers.has(search.accessTier)) errors.push("Unsupported access tier.");
+  if (search.meterId && !/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(search.meterId)) {
+    errors.push("Meter id must be a GUID.");
+  }
   [search.product, search.skuName, search.meterName, search.unit].forEach((value) => {
     if (value && value.length > MAX_VALUE_LENGTH) errors.push("One or more query parameters are too long.");
   });
@@ -70,6 +74,7 @@ function keyFor(request: PricingSearchRequest): string {
     product: request.product,
     skuName: request.skuName,
     meterName: request.meterName,
+    meterId: request.meterId,
     priceType: request.priceType
   });
 }

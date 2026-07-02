@@ -83,6 +83,7 @@ export interface PricingSearchRequest {
   product?: string;
   skuName?: string;
   meterName?: string;
+  meterId?: string;
   unit?: string;
   redundancy?: Redundancy;
   accessTier?: AccessTier;

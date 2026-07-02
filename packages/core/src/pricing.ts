@@ -17,6 +17,14 @@ export function buildRetailPricesUrl(request: PricingSearchRequest): string {
     `armRegionName eq ${quote(request.region)}`
   ];
 
+  if (request.meterId) {
+    // A meter id uniquely identifies the billed meter (per region), so pin to it
+    // directly and skip the fuzzy product/sku/meterName text filters.
+    filters.push(`meterId eq ${quote(request.meterId)}`);
+    url.searchParams.set("$filter", filters.join(" and "));
+    return url.toString();
+  }
+
   if (request.product) {
     filters.push(`contains(productName, ${quote(request.product)})`);
   }

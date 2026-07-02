@@ -101,6 +101,22 @@ describe("pricing API helpers", () => {
     expect(decoded).toContain("contains(productName, 'Blob')");
   });
 
+  it("pins to a meter id (region-scoped) and drops fuzzy text filters when provided", () => {
+    const url = buildRetailPricesUrl({
+      region: "westus2",
+      currency: "USD",
+      product: "Blob",
+      meterName: "General Purpose Data Stored",
+      meterId: "c1635534-1c1d-4fc4-b090-88fc2672ef87"
+    });
+
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    expect(decoded).toContain("armRegionName eq 'westus2'");
+    expect(decoded).toContain("meterId eq 'c1635534-1c1d-4fc4-b090-88fc2672ef87'");
+    expect(decoded).not.toContain("contains(productName");
+    expect(decoded).not.toContain("contains(meterName");
+  });
+
   it("follows pagination", async () => {
     const pages: Record<string, { Items: number[]; NextPageLink?: string | null }> = {
       first: { Items: [1], NextPageLink: "second" },
