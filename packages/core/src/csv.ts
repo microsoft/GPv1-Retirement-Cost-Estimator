@@ -19,6 +19,11 @@ export const requiredCsvColumns = [
   "Currency",
   "Tags or storage account name"
 ];
+// Columns that are part of the canonical template but not strictly required for
+// an estimate. Real Azure Cost Management / usage exports do not include a
+// dedicated SKU name column (the SKU is embedded in the product/meter names),
+// so uploads must not be rejected when it is absent.
+export const optionalCsvColumns = new Set<string>(["SKU name"]);
 export const MAX_CSV_CHARACTERS = 5_000_000;
 export const MAX_CSV_ROWS = 5_000;
 
@@ -44,9 +49,21 @@ const columnAliases: Record<string, string[]> = {
   "Tags or storage account name": ["Tags or storage account name", "Tags", "ResourceName", "ResourceId", "InstanceName"]
 };
 
+// Azure exports vary in header casing and punctuation (e.g. "MeterSubCategory",
+// "meterSubCategory", "Meter subcategory"). Normalize to a lowercase,
+// alphanumeric-only key so aliases match regardless of casing or separators.
+function normalizeHeader(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
 function resolveHeader(headers: string[], canonical: string): string | undefined {
   const aliases = columnAliases[canonical] || [canonical];
-  return aliases.find((alias) => headers.includes(alias));
+  for (const alias of aliases) {
+    const target = normalizeHeader(alias);
+    const match = headers.find((header) => normalizeHeader(header) === target);
+    if (match) return match;
+  }
+  return undefined;
 }
 
 function read(row: Record<string, string>, headers: string[], key: string): string {
@@ -72,7 +89,7 @@ export function parseUsageCsv(csvText: string): CsvParseResult {
 
   const headers = parsed.meta.fields || [];
   const errors = requiredCsvColumns
-    .filter((column) => !resolveHeader(headers, column))
+    .filter((column) => !optionalCsvColumns.has(column) && !resolveHeader(headers, column))
     .map((column) => `Missing required column: ${column}`);
 
   parsed.errors.forEach((error) => errors.push(`CSV parse error on row ${error.row ?? "unknown"}: ${error.message}`));
