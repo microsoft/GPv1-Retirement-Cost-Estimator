@@ -145,6 +145,26 @@ export function matchMeter(item: UsageLineItem, candidates: PriceMeter[], target
     return { confidence: "Unmatched", score: 0, candidates: [], notes: ["No candidate public price meters were available."] };
   }
 
+  // The usage export's MeterId is the GUID of the meter that was actually billed,
+  // i.e. the current/GPv1 meter. When it is present and the public price list
+  // returns that exact meter, pin the GPv1 price to it directly instead of relying
+  // on fuzzy text scoring. (The GPv2 target is a modeled conversion to a different
+  // StorageV2 meter that never appears in the export, so it keeps using inference.)
+  if (target === "gpv1" && item.meterId) {
+    const wantedMeterId = item.meterId.trim().toLowerCase();
+    const exactTiers = candidates.filter((candidate) => candidate.meterId.trim().toLowerCase() === wantedMeterId);
+    if (exactTiers.length > 0) {
+      const primary = [...exactTiers].sort((a, b) => a.tierMinimumUnits - b.tierMinimumUnits)[0];
+      return {
+        confidence: "Exact match",
+        score: 100,
+        meter: primary,
+        candidates: exactTiers,
+        notes: [`Matched the billed meter by ID ${primary.meterId} from the usage export.`]
+      };
+    }
+  }
+
   const scored = candidates
     .map((candidate) => ({ candidate, ...scoreCandidate(item, candidate, target) }))
     .filter((entry) => entry.score > 0)

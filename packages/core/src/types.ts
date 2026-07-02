@@ -19,6 +19,7 @@ export interface UsageLineItem {
   meterSubcategory?: string;
   meterName: string;
   skuName: string;
+  meterId?: string;
   region: string;
   quantity: number;
   unit: string;
