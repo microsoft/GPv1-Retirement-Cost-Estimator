@@ -369,6 +369,30 @@ describe("CSV parsing", () => {
     expect(result.rows[0].meterId).toBeUndefined();
   });
 
+  it("prefers the ARM resource id over tags when identifying the storage account", () => {
+    const header = "date,consumedService,ProductName,meterCategory,meterSubCategory,meterName,resourceLocation,quantity,unitOfMeasure,effectivePrice,costInBillingCurrency,billingCurrency,ResourceId,tags";
+    const row = "2026-06-01,Microsoft.Storage,General Block Blob,Storage,Blob Storage,Hot LRS Data Stored,eastus,100,1 GB/Month,0.02,2,USD,/subscriptions/s/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/realaccount,account=tagaccount";
+    const result = parseUsageCsv([header, row].join("\n"));
+
+    expect(result.errors).toEqual([]);
+    expect(extractStorageAccountName(result.rows[0].storageAccountName)).toBe("realaccount");
+  });
+
+  it("splits multiple accounts from a raw cost export into separate groups", () => {
+    const header = "date,consumedService,ProductName,meterCategory,meterSubCategory,meterName,resourceLocation,quantity,unitOfMeasure,effectivePrice,costInBillingCurrency,billingCurrency,ResourceId,tags";
+    const mk = (acct: string, region: string) =>
+      `2026-06-01,Microsoft.Storage,General Block Blob,Storage,Blob Storage,Hot LRS Data Stored,${region},100,1 GB/Month,0.02,2,USD,/subscriptions/s/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/${acct},{}`;
+    const result = parseUsageCsv([header, mk("alpha", "eastus"), mk("beta", "westus2"), mk("alpha", "eastus")].join("\n"));
+    const groups = groupByAccountAndRegion(
+      result.rows.filter((row) => row.modeled),
+      (row) => row.storageAccountName,
+      (row) => row.region
+    );
+
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.account).sort()).toEqual(["alpha", "beta"]);
+  });
+
   it("escapes spreadsheet formula controls in CSV export", () => {
     const gpV1 = matchMeter(usage, [meter({ productName: "General Block Blob", meterName: "LRS Data Stored", skuName: "Standard LRS", unitPrice: 0.02 })], "gpv1");
     const gpV2 = matchMeter(usage, [meter({ unitPrice: 0.018 })], "gpv2");
