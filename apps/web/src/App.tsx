@@ -530,7 +530,50 @@ function pricingLookupKey(row: UsageLineItem): string {
   });
 }
 
+function pricingFetch(
+  params: URLSearchParams,
+  key: string,
+  meterNameForError: string,
+  runCache: Map<string, Promise<PricingSearchResponse>>
+): Promise<PricingSearchResponse> {
+  const cached = runCache.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const request = fetch(`/api/prices/search?${params.toString()}`).then(async (response) => {
+    if (!response.ok && response.status !== 206) {
+      throw new Error(`Pricing lookup failed for ${meterNameForError}`);
+    }
+    return (await response.json()) as PricingSearchResponse;
+  });
+  runCache.set(key, request);
+  return request;
+}
+
+const meterIdPattern = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 async function lookupPrices(row: UsageLineItem, target: "gpv1" | "gpv2", refresh = false, runCache = pricingLookupCache): Promise<PricingSearchResponse> {
+  // GPv1/current price: when the export carries the billed meter id, pin the
+  // public price to that exact meter (scoped to the row's region) instead of the
+  // fuzzy meterName text search. This catches meters like the GPv1 capacity meter
+  // whose export meterName ("General Purpose Data Stored") does not appear in the
+  // Retail Prices API. GPv2 stays inference-based (its target meter isn't billed).
+  if (target === "gpv1" && row.meterId && meterIdPattern.test(row.meterId)) {
+    const idParams = new URLSearchParams({
+      region: row.region,
+      currency: row.currency,
+      meterId: row.meterId,
+      refresh: String(refresh)
+    });
+    const idKey = `${JSON.stringify({ region: row.region, currency: row.currency, meterId: row.meterId })}:${refresh ? "refresh" : "cached"}`;
+    const byId = await pricingFetch(idParams, idKey, row.meterName, runCache);
+    if (byId.candidates.length > 0) {
+      return byId;
+    }
+    // Meter id isn't in the public retail prices: fall back to the text lookup.
+  }
+
   const params = new URLSearchParams({
     region: row.region,
     currency: row.currency,
@@ -543,19 +586,7 @@ async function lookupPrices(row: UsageLineItem, target: "gpv1" | "gpv2", refresh
   params.set("accessTier", target === "gpv1" ? "Hot" : row.accessTier || "Hot");
 
   const key = `${pricingLookupKey(row)}:${refresh ? "refresh" : "cached"}`;
-  const cached = runCache.get(key);
-  if (cached) {
-    return cached;
-  }
-
-  const request = fetch(`/api/prices/search?${params.toString()}`).then(async (response) => {
-    if (!response.ok && response.status !== 206) {
-      throw new Error(`Pricing lookup failed for ${row.meterName}`);
-    }
-    return (await response.json()) as PricingSearchResponse;
-  });
-  runCache.set(key, request);
-  return request;
+  return pricingFetch(params, key, row.meterName, runCache);
 }
 
 function downloadFile(filename: string, content: string, type: string): void {
