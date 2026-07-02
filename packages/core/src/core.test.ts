@@ -5,6 +5,7 @@ import {
   calculateResultLine,
   classifyConfidence,
   createSampleCsv,
+  extractStorageAccountName,
   fetchAllRetailPricePages,
   isBlobStorageLine,
   matchMeter,
@@ -311,6 +312,48 @@ describe("CSV parsing", () => {
     const csv = resultsToCsv([row]);
 
     expect(csv).toContain("'=HYPERLINK");
+  });
+});
+
+describe("extractStorageAccountName", () => {
+  it("extracts the account name from an ARM resource id", () => {
+    expect(
+      extractStorageAccountName(
+        "/subscriptions/0000/resourceGroups/rg-prod/providers/Microsoft.Storage/storageAccounts/prodgpv1"
+      )
+    ).toBe("prodgpv1");
+    expect(
+      extractStorageAccountName(
+        "/subscriptions/0000/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/prodgpv1/blobServices/default"
+      )
+    ).toBe("prodgpv1");
+  });
+
+  it("extracts the account from delimited key=value tag strings", () => {
+    expect(extractStorageAccountName("account=prodgpv1;scenario=capacity")).toBe("prodgpv1");
+    expect(extractStorageAccountName("scenario=capacity, StorageAccountName=coolstore01")).toBe("coolstore01");
+  });
+
+  it("extracts the account from JSON-encoded tags", () => {
+    expect(extractStorageAccountName('{"account":"prodgpv1","env":"prod"}')).toBe("prodgpv1");
+  });
+
+  it("returns a plain account name or friendly name unchanged", () => {
+    expect(extractStorageAccountName("prodgpv1")).toBe("prodgpv1");
+    expect(extractStorageAccountName("  Prod Storage  ")).toBe("Prod Storage");
+  });
+
+  it("returns undefined when no confident account name is present", () => {
+    expect(extractStorageAccountName("")).toBeUndefined();
+    expect(extractStorageAccountName(undefined)).toBeUndefined();
+    expect(extractStorageAccountName("env=prod;team=storage")).toBeUndefined();
+  });
+
+  it("prefers the account tag value over the resource path in the sample CSV", () => {
+    const result = parseUsageCsv(createSampleCsv());
+    const firstModeled = result.rows.find((row) => row.modeled);
+
+    expect(extractStorageAccountName(firstModeled?.storageAccountName)).toBe("prodgpv1");
   });
 });
 

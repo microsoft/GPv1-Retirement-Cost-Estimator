@@ -320,3 +320,69 @@ export function createSampleCsv(): string {
   ];
   return rows.join("\n");
 }
+
+const accountTagKeys = ["storageaccountname", "storageaccount", "accountname", "account", "resourcename", "name"];
+
+function cleanAccountToken(value: string): string {
+  return value.trim().replace(/^["']+|["']+$/g, "").trim();
+}
+
+function pickAccountFromEntries(entries: Array<[string, string]>): string | undefined {
+  const normalized = entries
+    .map(([key, value]) => ({ key: key.toLowerCase().replace(/[^a-z0-9]/g, ""), value: cleanAccountToken(value) }))
+    .filter((entry) => entry.value.length > 0);
+  for (const wanted of accountTagKeys) {
+    const hit = normalized.find((entry) => entry.key === wanted);
+    if (hit) return hit.value;
+  }
+  return undefined;
+}
+
+/**
+ * Derive a clean Azure Storage account name from the free-form value found in the
+ * "Tags or storage account name" column of a usage export. Handles ARM resource IDs
+ * (`/.../storageAccounts/<name>`), JSON tag blobs, delimited `key=value` tag strings,
+ * resource paths, and plain account names. Returns undefined when no confident account
+ * name can be extracted, so callers can fall back to another descriptor.
+ */
+export function extractStorageAccountName(raw: string | null | undefined): string | undefined {
+  const value = (raw ?? "").trim();
+  if (!value) return undefined;
+
+  const armMatch = value.match(/storageaccounts\/([^/\s]+)/i);
+  if (armMatch?.[1]) return cleanAccountToken(armMatch[1]);
+
+  if (value.startsWith("{") && value.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(value) as Record<string, unknown>;
+      const entries = Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string"
+      );
+      return pickAccountFromEntries(entries);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (/[=:]/.test(value)) {
+    const entries = value
+      .split(/[;,]/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const separator = part.search(/[=:]/);
+        return separator === -1
+          ? undefined
+          : ([part.slice(0, separator), part.slice(separator + 1)] as [string, string]);
+      })
+      .filter((entry): entry is [string, string] => Boolean(entry));
+    return pickAccountFromEntries(entries);
+  }
+
+  if (value.includes("/")) {
+    const last = value.split("/").map((part) => part.trim()).filter(Boolean).pop();
+    return last && !/\s/.test(last) ? cleanAccountToken(last) : undefined;
+  }
+
+  return cleanAccountToken(value);
+}

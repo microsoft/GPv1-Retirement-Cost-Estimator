@@ -15,6 +15,7 @@ import {
   azureArmRegions,
   MAX_CSV_CHARACTERS,
   manualInputToUsage,
+  extractStorageAccountName,
   inferAccessTier,
   inferRedundancy,
   matchMeter,
@@ -275,7 +276,12 @@ function assessmentCapacityGb(rows: ResultLineItem[], manualFallback: number): n
 }
 
 function inferStorageAccountName(rows: UsageLineItem[], fallback: string): string {
-  return rows.find((row) => row.storageAccountName)?.storageAccountName || fallback;
+  const modeledFirst = [...rows.filter((row) => row.modeled), ...rows.filter((row) => !row.modeled)];
+  for (const row of modeledFirst) {
+    const name = extractStorageAccountName(row.storageAccountName);
+    if (name) return name;
+  }
+  return fallback;
 }
 
 function uid(prefix: string): string {
@@ -662,10 +668,20 @@ export default function App() {
         : undefined,
     [portfolioSummary.assessments, results]
   );
-  const suggestedPortfolioEstimateName = useMemo(
-    () => inferStorageAccountName(usageRows, `${manual.region}-${manual.redundancy}-${manual.accessTier}-estimate`),
-    [manual.accessTier, manual.redundancy, manual.region, usageRows]
-  );
+  const suggestedPortfolioEstimateName = useMemo(() => {
+    const isCsvUsage = usageRows.some((row) => row.source === "csv");
+    if (!isCsvUsage) {
+      return inferStorageAccountName(usageRows, `${manual.region}-${manual.redundancy}-${manual.accessTier}-estimate`);
+    }
+    const account = inferStorageAccountName(usageRows, "");
+    const billingPeriod = usageRows.find((row) => row.billingPeriod?.trim())?.billingPeriod?.trim();
+    if (account) {
+      return billingPeriod ? `${account} (${billingPeriod})` : account;
+    }
+    const region = usageRows.find((row) => row.region?.trim())?.region?.trim();
+    const descriptor = [region, billingPeriod].filter(Boolean).join(", ");
+    return descriptor ? `Azure cost export (${descriptor})` : "Azure cost export estimate";
+  }, [usageRows, manual.accessTier, manual.redundancy, manual.region]);
   const hasCustomerWorkspaceData = useMemo(
     () => portfolioAssessments.length > 0 || Object.entries(customerProfile).some(([key, value]) => key !== "engagementStatus" ? value.trim().length > 0 : value !== "Planning"),
     [customerProfile, portfolioAssessments.length]
