@@ -592,6 +592,7 @@ export default function App() {
   const summary = useMemo(() => summarizeCosts(results), [results]);
   const portfolioSummary = useMemo(() => summarizePortfolio(portfolioAssessments), [portfolioAssessments]);
   const currency = usageRows[0]?.currency || manual.currency || "USD";
+  const ignoredUsageRows = useMemo(() => usageRows.filter((row) => !row.modeled).length, [usageRows]);
   const migrationAssessment = useMemo(
     () => buildMigrationAssessment(results, usageRows, manual, summary.discountedDelta, experienceMode),
     [experienceMode, manual, results, summary.discountedDelta, usageRows]
@@ -1073,6 +1074,11 @@ export default function App() {
         setStep("usage");
         return;
       }
+      if (!parsed.rows.some((row) => row.modeled)) {
+        setStatus("No Blob Storage usage found. All uploaded line items were ignored as non-GPv1/GPv2 usage.");
+        setStep("usage");
+        return;
+      }
       await priceUsageRows(parsed.rows, false, "results");
     } finally {
       setPricingBusy(false);
@@ -1088,7 +1094,12 @@ export default function App() {
     const runCache = new Map<string, Promise<PricingSearchResponse>>();
     let latestRefresh = pricingRefreshedAt;
 
-    const nextResults = await Promise.all(rows.map(async (row) => {
+    // Only Blob Storage usage relevant to a GPv1/GPv2 estimate is priced. Line items from
+    // raw Azure cost exports that are not Blob Storage (VMs, networking, SQL, Files, etc.)
+    // are ignored here so they never surface on the Pricing Review page or in exports.
+    const priceableRows = rows.filter((row) => row.modeled);
+
+    const nextResults = await Promise.all(priceableRows.map(async (row) => {
       if (!row.included || !row.modeled) {
         const unmatched = { confidence: "Unmatched" as const, score: 0, candidates: [], notes: row.notes };
         return calculateResultLine(row, unmatched, unmatched, discounts);
@@ -1363,7 +1374,7 @@ export default function App() {
                     <span key={label}>{index + 1}. {label}</span>
                   ))}
                 </div>
-                <div className="availability-note">CSV upload accepts the app template and common Azure Cost Management export headers such as ProductName, MeterName, ResourceLocation, UnitOfMeasure, EffectivePrice, and CostInBillingCurrency.</div>
+                <div className="availability-note">CSV upload accepts the app template and raw Azure Cost Management usage exports. Column headers are matched case-insensitively (e.g. meterName, meterCategory, resourceLocation, unitOfMeasure, quantity, costInBillingCurrency), and a SKU name column is optional.</div>
                 <input type="file" accept=".csv,text/csv" onChange={(event) => {
                   const file = event.target.files?.[0];
                   if (file) {
@@ -1410,6 +1421,11 @@ export default function App() {
             </Button>
           </div>
           {csvErrors.length > 0 && <div className="error">{csvErrors.join(" ")}</div>}
+          {ignoredUsageRows > 0 && (
+            <div className="availability-note">
+              {ignoredUsageRows} of {usageRows.length} uploaded line {usageRows.length === 1 ? "item" : "items"} {ignoredUsageRows === 1 ? "is" : "are"} not Blob Storage usage. {ignoredUsageRows === 1 ? "It is" : "They are"} ignored for GPv1/GPv2 estimation and excluded from the Pricing Review and the estimate totals.
+            </div>
+          )}
           <UsageTable rows={usageRows} onToggle={toggleRow} />
         </section>
       )}
@@ -1426,7 +1442,18 @@ export default function App() {
               <Button appearance="primary" onClick={() => setStep("results")} disabled={results.length === 0}>View results</Button>
             </div>
           </div>
-          <PricingTable rows={results} onInclude={includeAmbiguous} />
+          {ignoredUsageRows > 0 && (
+            <div className="availability-note">
+              {ignoredUsageRows} non-Blob-Storage line {ignoredUsageRows === 1 ? "item was" : "items were"} ignored from the uploaded file and {ignoredUsageRows === 1 ? "is" : "are"} not shown below. Only GPv1/GPv2 Blob Storage usage is priced.
+            </div>
+          )}
+          {results.length === 0 ? (
+            <div className="chart-empty">
+              No Blob Storage usage was found to price.{ignoredUsageRows > 0 ? ` ${ignoredUsageRows} uploaded line ${ignoredUsageRows === 1 ? "item was" : "items were"} ignored as non-Blob-Storage usage.` : ""}
+            </div>
+          ) : (
+            <PricingTable rows={results} onInclude={includeAmbiguous} />
+          )}
         </section>
       )}
 

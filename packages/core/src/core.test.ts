@@ -275,6 +275,26 @@ describe("CSV parsing", () => {
     expect(result.rows[0].modeled).toBe(true);
   });
 
+  it("accepts real Azure cost export camelCase headers without a SKU column", () => {
+    const csv = [
+      "date,consumedService,ProductName,meterCategory,meterSubCategory,meterName,resourceLocation,meterRegion,quantity,unitOfMeasure,unitPrice,costInBillingCurrency,billingCurrency,tags",
+      "06/15/2026,Microsoft.Storage,General Block Blob,Storage,Blob Storage,Hot LRS Data Stored,eastus,US East,100,1 GB/Month,0.02,2,USD,account=prodgpv1"
+    ].join("\n");
+    const result = parseUsageCsv(csv);
+
+    expect(result.errors).toEqual([]);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].product).toBe("General Block Blob");
+    expect(result.rows[0].meterCategory).toBe("Storage");
+    expect(result.rows[0].meterName).toBe("Hot LRS Data Stored");
+    // resourceLocation (ARM region) is preferred over meterRegion for pricing lookups.
+    expect(result.rows[0].region).toBe("eastus");
+    expect(result.rows[0].quantity).toBe(100);
+    expect(result.rows[0].cost).toBe(2);
+    expect(result.rows[0].skuName).toBe("");
+    expect(result.rows[0].modeled).toBe(true);
+  });
+
   it("limits oversized CSV row counts", () => {
     const header = "UsageDate,ConsumedService,ProductName,MeterCategory,MeterSubCategory,MeterName,SkuName,ResourceLocation,UsageQuantity,UnitOfMeasure,EffectivePrice,CostInBillingCurrency,BillingCurrency,ResourceName";
     const row = "2026-05-01,Storage,General Block Blob,Storage,Blob Storage,LRS Data Stored,Standard LRS,eastus,100,1 GB/Month,0.02,2,USD,prodgpv1";
