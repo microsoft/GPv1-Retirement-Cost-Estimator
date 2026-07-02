@@ -15,6 +15,8 @@ import {
   azureArmRegions,
   MAX_CSV_CHARACTERS,
   manualInputToUsage,
+  extractStorageAccountName,
+  groupByAccountAndRegion,
   inferAccessTier,
   inferRedundancy,
   matchMeter,
@@ -23,6 +25,7 @@ import {
   summarizePortfolio,
   summarizeCosts,
   type AccessTier,
+  type AccountRegionGroup,
   type CustomerProfile,
   type DiscountSettings,
   type ManualUsageInput,
@@ -275,11 +278,101 @@ function assessmentCapacityGb(rows: ResultLineItem[], manualFallback: number): n
 }
 
 function inferStorageAccountName(rows: UsageLineItem[], fallback: string): string {
-  return rows.find((row) => row.storageAccountName)?.storageAccountName || fallback;
+  const modeledFirst = [...rows.filter((row) => row.modeled), ...rows.filter((row) => !row.modeled)];
+  for (const row of modeledFirst) {
+    const name = extractStorageAccountName(row.storageAccountName);
+    if (name) return name;
+  }
+  return fallback;
 }
 
 function uid(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function pickMostCommon<T extends string>(values: Array<T | undefined | null>): T | undefined {
+  const counts = new Map<T, number>();
+  for (const value of values) {
+    if (!value) continue;
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  let best: T | undefined;
+  let bestCount = 0;
+  for (const [value, count] of counts) {
+    if (count > bestCount) {
+      best = value;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function assessmentGroupLabel(
+  group: AccountRegionGroup<ResultLineItem>,
+  usageRows: UsageLineItem[],
+  groups: AccountRegionGroup<ResultLineItem>[]
+): string {
+  const base = group.account || "Unassigned account";
+  const sameAccountAcrossRegions =
+    groups.filter((entry) => (entry.account ?? "") === (group.account ?? "")).length > 1;
+  const billingPeriod = pickMostCommon(usageRows.map((row) => (row.billingPeriod?.trim() ? row.billingPeriod.trim() : undefined)));
+  const qualifier = sameAccountAcrossRegions ? group.region || "unknown region" : billingPeriod;
+  return qualifier ? `${base} (${qualifier})` : base;
+}
+
+interface BuildAssessmentsOptions {
+  customName?: string;
+  fallbackName: string;
+}
+
+/**
+ * Turn a completed estimate into one portfolio assessment per storage account and
+ * region. A single-account, single-region upload stays one assessment (named with
+ * the user's estimate name); multi-account or multi-region uploads are split so
+ * each account keeps its own region, currency, redundancy, tier, capacity, and
+ * region-specific pricing rather than being collapsed into one account.
+ */
+function buildAssessmentsFromEstimate(saved: SavedEstimate, options: BuildAssessmentsOptions): PortfolioAssessmentInput[] {
+  const now = new Date().toISOString();
+  const groups = groupByAccountAndRegion(
+    saved.results,
+    (row) => row.usage.storageAccountName,
+    (row) => row.usage.region
+  );
+  const customName = options.customName?.trim();
+  const singleGroup = groups.length <= 1;
+
+  return groups.map((group) => {
+    const usageRows = group.items.map((row) => row.usage);
+    const region = group.region || pickMostCommon(usageRows.map((row) => row.region)) || saved.manual.region;
+    const currency = pickMostCommon(usageRows.map((row) => row.currency)) || saved.manual.currency;
+    const redundancy = pickMostCommon(usageRows.map((row) => row.redundancy)) || saved.manual.redundancy;
+    const accessTier = pickMostCommon(usageRows.map((row) => row.accessTier)) || saved.manual.accessTier;
+    const label = assessmentGroupLabel(group, usageRows, groups);
+    const name = singleGroup
+      ? customName || options.fallbackName
+      : customName
+        ? `${customName} — ${label}`
+        : label;
+    const storageAccountName =
+      group.account || (singleGroup ? inferStorageAccountName(saved.usageRows, "manual-assessment") : "Unassigned account");
+
+    return {
+      id: uid("assessment"),
+      name,
+      storageAccountName,
+      region,
+      redundancy,
+      accessTier,
+      currency,
+      capacityGb: assessmentCapacityGb(group.items, singleGroup ? saved.manual.capacityGb : 0),
+      results: group.items,
+      notes: usageRows.flatMap((row) => row.notes).slice(0, 5),
+      createdAt: saved.savedAt || now,
+      updatedAt: now,
+      status: "Active"
+    } satisfies PortfolioAssessmentInput;
+  });
 }
 
 function portfolioToCsv(rows: PortfolioAssessmentSummary[]): string {
@@ -651,21 +744,56 @@ export default function App() {
     () => portfolioSummary.assessments.filter((assessment) => selectedPortfolioIds.includes(assessment.id)),
     [portfolioSummary.assessments, selectedPortfolioIds]
   );
-  const currentEstimatePortfolioMatch = useMemo(
-    () =>
-      results.length > 0
-        ? portfolioSummary.assessments.find(
-            (assessment) =>
-              assessment.results.length === results.length &&
-              assessment.results.every((row, index) => row.usage.id === results[index]?.usage.id && row.gpV1DiscountedCost === results[index]?.gpV1DiscountedCost && row.gpV2DiscountedCost === results[index]?.gpV2DiscountedCost)
-          )
-        : undefined,
-    [portfolioSummary.assessments, results]
+  const currentEstimatePortfolioMatch = useMemo(() => {
+    if (results.length === 0) return false;
+    const priced = new Map<string, { gpV1DiscountedCost: number; gpV2DiscountedCost: number }>();
+    for (const assessment of portfolioSummary.assessments) {
+      for (const row of assessment.results) {
+        priced.set(row.usage.id, { gpV1DiscountedCost: row.gpV1DiscountedCost, gpV2DiscountedCost: row.gpV2DiscountedCost });
+      }
+    }
+    // The current estimate may have been split across several assessments (one per
+    // account/region), so treat it as "in the portfolio" when every priced row is
+    // already represented rather than requiring a single matching assessment.
+    return results.every((row) => {
+      const match = priced.get(row.usage.id);
+      return Boolean(match) && match?.gpV1DiscountedCost === row.gpV1DiscountedCost && match?.gpV2DiscountedCost === row.gpV2DiscountedCost;
+    });
+  }, [portfolioSummary.assessments, results]);
+  const currentEstimateAccountGroups = useMemo(
+    () => groupByAccountAndRegion(results, (row) => row.usage.storageAccountName, (row) => row.usage.region),
+    [results]
   );
-  const suggestedPortfolioEstimateName = useMemo(
-    () => inferStorageAccountName(usageRows, `${manual.region}-${manual.redundancy}-${manual.accessTier}-estimate`),
-    [manual.accessTier, manual.redundancy, manual.region, usageRows]
+  const currentEstimateAccountCount = useMemo(
+    () => new Set(currentEstimateAccountGroups.map((group) => group.account ?? "")).size,
+    [currentEstimateAccountGroups]
   );
+  const currentEstimateRegionCount = useMemo(
+    () => new Set(currentEstimateAccountGroups.map((group) => group.region)).size,
+    [currentEstimateAccountGroups]
+  );
+  const accountSplitNote =
+    currentEstimateAccountGroups.length > 1 ? (
+      <div className="availability-note">
+        {`Detected ${currentEstimateAccountCount} storage account${currentEstimateAccountCount === 1 ? "" : "s"}`}
+        {currentEstimateRegionCount > 1 ? ` across ${currentEstimateRegionCount} regions` : ""}
+        {". Each account and region is added to the portfolio as its own assessment so every one keeps its own region's pricing."}
+      </div>
+    ) : null;
+  const suggestedPortfolioEstimateName = useMemo(() => {
+    const isCsvUsage = usageRows.some((row) => row.source === "csv");
+    if (!isCsvUsage) {
+      return inferStorageAccountName(usageRows, `${manual.region}-${manual.redundancy}-${manual.accessTier}-estimate`);
+    }
+    const account = inferStorageAccountName(usageRows, "");
+    const billingPeriod = usageRows.find((row) => row.billingPeriod?.trim())?.billingPeriod?.trim();
+    if (account) {
+      return billingPeriod ? `${account} (${billingPeriod})` : account;
+    }
+    const region = usageRows.find((row) => row.region?.trim())?.region?.trim();
+    const descriptor = [region, billingPeriod].filter(Boolean).join(", ");
+    return descriptor ? `Azure cost export (${descriptor})` : "Azure cost export estimate";
+  }, [usageRows, manual.accessTier, manual.redundancy, manual.region]);
   const hasCustomerWorkspaceData = useMemo(
     () => portfolioAssessments.length > 0 || Object.entries(customerProfile).some(([key, value]) => key !== "engagementStatus" ? value.trim().length > 0 : value !== "Planning"),
     [customerProfile, portfolioAssessments.length]
@@ -869,36 +997,33 @@ export default function App() {
     };
   }
 
-  function assessmentFromEstimate(saved: SavedEstimate, name?: string): PortfolioAssessmentInput {
-    const now = new Date().toISOString();
-    return {
-      id: uid("assessment"),
-      name: name || inferStorageAccountName(saved.usageRows, "Current estimate"),
-      storageAccountName: inferStorageAccountName(saved.usageRows, "manual-assessment"),
-      region: saved.manual.region,
-      redundancy: saved.manual.redundancy,
-      accessTier: saved.manual.accessTier,
-      currency: saved.manual.currency,
-      capacityGb: assessmentCapacityGb(saved.results, saved.manual.capacityGb),
-      results: saved.results,
-      notes: saved.usageRows.flatMap((row) => row.notes).slice(0, 5),
-      createdAt: saved.savedAt || now,
-      updatedAt: now,
-      status: "Active"
-    };
-  }
-
   function addCurrentEstimateToPortfolio() {
     if (results.length === 0) {
       setStatus("Calculate an estimate before adding it to the portfolio.");
       return;
     }
-    const estimateName = portfolioEstimateName.trim() || suggestedPortfolioEstimateName;
-    const assessment = assessmentFromEstimate(currentSavedEstimate(), estimateName);
-    setPortfolioAssessments((current) => [assessment, ...current]);
-    setSelectedPortfolioIds([assessment.id]);
+    const remaining = MAX_PORTFOLIO_ASSESSMENTS - portfolioAssessments.length;
+    if (remaining <= 0) {
+      setStatus(`Portfolio already has the maximum of ${MAX_PORTFOLIO_ASSESSMENTS} assessments. Remove some before adding more.`);
+      return;
+    }
+    const assessments = buildAssessmentsFromEstimate(currentSavedEstimate(), {
+      customName: portfolioEstimateName,
+      fallbackName: portfolioEstimateName.trim() || suggestedPortfolioEstimateName
+    });
+    const toAdd = assessments.slice(0, remaining);
+    const skipped = assessments.length - toAdd.length;
+    setPortfolioAssessments((current) => [...toAdd, ...current]);
+    setSelectedPortfolioIds(toAdd.map((assessment) => assessment.id));
     setPortfolioEstimateName("");
-    setStatus(`Added ${assessment.name} to portfolio.`);
+    if (toAdd.length > 1) {
+      const regionCount = new Set(toAdd.map((assessment) => assessment.region)).size;
+      const regionNote = regionCount > 1 ? ` across ${regionCount} regions` : "";
+      const skippedNote = skipped > 0 ? ` (${skipped} skipped — portfolio limit reached)` : "";
+      setStatus(`Added ${toAdd.length} storage accounts${regionNote} to portfolio${skippedNote}.`);
+    } else {
+      setStatus(`Added ${toAdd[0].name} to portfolio.`);
+    }
     setStep("portfolio");
   }
 
@@ -1473,6 +1598,7 @@ export default function App() {
                   <Field label="Estimate name">
                     <Input value={portfolioEstimateName} placeholder={suggestedPortfolioEstimateName} onChange={(_, data) => setPortfolioEstimateName(data.value)} />
                   </Field>
+                  {accountSplitNote}
                 </div>
               )}
             </div>
@@ -1717,6 +1843,7 @@ export default function App() {
                     <Field label="Estimate name">
                       <Input value={portfolioEstimateName} placeholder={suggestedPortfolioEstimateName} onChange={(_, data) => setPortfolioEstimateName(data.value)} />
                     </Field>
+                    {accountSplitNote}
                   </div>
                 )}
               </div>
