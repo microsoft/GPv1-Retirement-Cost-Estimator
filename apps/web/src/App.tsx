@@ -375,6 +375,10 @@ function buildAssessmentsFromEstimate(saved: SavedEstimate, options: BuildAssess
   });
 }
 
+function portfolioAccountRegionKey(assessment: { storageAccountName: string; region: string }): string {
+  return `${(assessment.storageAccountName || "").trim().toLowerCase()}|${(assessment.region || "").trim().toLowerCase()}`;
+}
+
 function portfolioToCsv(rows: PortfolioAssessmentSummary[]): string {
   const headers = [
     "Assessment",
@@ -1027,6 +1031,36 @@ export default function App() {
     setStep("portfolio");
   }
 
+  // A raw cost export can contain many storage accounts. When more than one is
+  // detected we build the per-account/region assessments and jump straight to a
+  // populated portfolio (deduping by account+region so re-uploads update in place)
+  // instead of leaving the user on the single-estimate Pricing Review page.
+  function maybeAutoBuildPortfolio(rows: UsageLineItem[], priced: ResultLineItem[]) {
+    if (priced.length === 0) return;
+    const groups = groupByAccountAndRegion(priced, (row) => row.usage.storageAccountName, (row) => row.usage.region);
+    const accountCount = new Set(groups.map((group) => group.account ?? "")).size;
+    if (accountCount <= 1) return;
+
+    const saved: SavedEstimate = { ...currentSavedEstimate(), usageRows: rows, results: priced };
+    const assessments = buildAssessmentsFromEstimate(saved, {
+      customName: "",
+      fallbackName: inferStorageAccountName(rows, "Azure cost export estimate")
+    });
+    if (assessments.length === 0) return;
+
+    setPortfolioAssessments((current) => {
+      const incomingKeys = new Set(assessments.map(portfolioAccountRegionKey));
+      const kept = current.filter((assessment) => !incomingKeys.has(portfolioAccountRegionKey(assessment)));
+      return [...assessments, ...kept].slice(0, MAX_PORTFOLIO_ASSESSMENTS);
+    });
+    setSelectedPortfolioIds(assessments.map((assessment) => assessment.id));
+
+    const regionCount = new Set(assessments.map((assessment) => assessment.region)).size;
+    const regionNote = regionCount > 1 ? ` across ${regionCount} regions` : "";
+    setStatus(`Imported ${accountCount} storage accounts${regionNote} into your portfolio from the CSV.`);
+    setStep("portfolio");
+  }
+
   function exportEstimateJson() {
     const saved = currentSavedEstimate();
     window.localStorage.setItem("gpv1-gpv2-last-estimate", JSON.stringify(saved));
@@ -1204,7 +1238,8 @@ export default function App() {
         setStep("usage");
         return;
       }
-      await priceUsageRows(parsed.rows, false, "results");
+      const priced = await priceUsageRows(parsed.rows, false, "results");
+      maybeAutoBuildPortfolio(parsed.rows, priced);
     } finally {
       setPricingBusy(false);
     }
@@ -1214,7 +1249,7 @@ export default function App() {
     setUsageRows((rows) => rows.map((row) => (row.id === id ? { ...row, included } : row)));
   }
 
-  async function priceUsageRows(rows: UsageLineItem[], refresh = false, nextStep: Step = "pricing") {
+  async function priceUsageRows(rows: UsageLineItem[], refresh = false, nextStep: Step = "pricing"): Promise<ResultLineItem[]> {
     setStatus(refresh ? "Refreshing public Azure prices..." : "Matching public Azure prices...");
     const runCache = new Map<string, Promise<PricingSearchResponse>>();
     let latestRefresh = pricingRefreshedAt;
@@ -1253,6 +1288,7 @@ export default function App() {
     setResults(nextResults);
     setStatus("Pricing match complete");
     setStep(nextStep);
+    return nextResults;
   }
 
   async function runPricing(refresh = false, nextStep: Step = "pricing") {
