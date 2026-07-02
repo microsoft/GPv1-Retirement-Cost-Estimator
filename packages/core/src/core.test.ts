@@ -7,6 +7,7 @@ import {
   createSampleCsv,
   extractStorageAccountName,
   fetchAllRetailPricePages,
+  groupByAccountAndRegion,
   isBlobStorageLine,
   matchMeter,
   MAX_CSV_ROWS,
@@ -354,6 +355,78 @@ describe("extractStorageAccountName", () => {
     const firstModeled = result.rows.find((row) => row.modeled);
 
     expect(extractStorageAccountName(firstModeled?.storageAccountName)).toBe("prodgpv1");
+  });
+});
+
+describe("groupByAccountAndRegion", () => {
+  interface Row {
+    id: string;
+    account?: string;
+    region?: string;
+  }
+  const group = (rows: Row[]) => groupByAccountAndRegion(rows, (row) => row.account, (row) => row.region);
+
+  it("keeps one account in one region as a single group", () => {
+    const groups = group([
+      { id: "a", account: "prodgpv1", region: "eastus" },
+      { id: "b", account: "prodgpv1", region: "eastus" }
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].account).toBe("prodgpv1");
+    expect(groups[0].region).toBe("eastus");
+    expect(groups[0].items.map((row) => row.id)).toEqual(["a", "b"]);
+  });
+
+  it("splits distinct accounts into separate groups in first-seen order", () => {
+    const groups = group([
+      { id: "a", account: "prodgpv1", region: "eastus" },
+      { id: "b", account: "coolstore01", region: "westus" },
+      { id: "c", account: "prodgpv1", region: "eastus" }
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].account).toBe("prodgpv1");
+    expect(groups[0].items.map((row) => row.id)).toEqual(["a", "c"]);
+    expect(groups[1].account).toBe("coolstore01");
+    expect(groups[1].region).toBe("westus");
+  });
+
+  it("splits one account across regions so each keeps its own region", () => {
+    const groups = group([
+      { id: "a", account: "prodgpv1", region: "eastus" },
+      { id: "b", account: "prodgpv1", region: "westus" }
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups.map((entry) => entry.region).sort()).toEqual(["eastus", "westus"]);
+    expect(groups.every((entry) => entry.account === "prodgpv1")).toBe(true);
+  });
+
+  it("absorbs blank regions into the account's dominant region", () => {
+    const groups = group([
+      { id: "a", account: "prodgpv1", region: "eastus" },
+      { id: "b", account: "prodgpv1", region: "eastus" },
+      { id: "c", account: "prodgpv1", region: "" }
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].region).toBe("eastus");
+    expect(groups[0].items).toHaveLength(3);
+  });
+
+  it("cleans raw account tags before grouping", () => {
+    const groups = group([
+      { id: "a", account: "account=prodgpv1;scenario=capacity", region: "eastus" },
+      { id: "b", account: "account=prodgpv2;scenario=capacity", region: "eastus" }
+    ]);
+    expect(groups.map((entry) => entry.account)).toEqual(["prodgpv1", "prodgpv2"]);
+  });
+
+  it("buckets rows without a recognizable account together", () => {
+    const groups = group([
+      { id: "a", account: "env=prod", region: "eastus" },
+      { id: "b", region: "eastus" }
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].account).toBeUndefined();
+    expect(groups[0].items).toHaveLength(2);
   });
 });
 

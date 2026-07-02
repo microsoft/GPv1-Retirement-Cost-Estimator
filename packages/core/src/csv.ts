@@ -386,3 +386,76 @@ export function extractStorageAccountName(raw: string | null | undefined): strin
 
   return cleanAccountToken(value);
 }
+
+export interface AccountRegionGroup<T> {
+  /** Cleaned storage account name, or undefined when none could be derived. */
+  account?: string;
+  /** Region shared by every item in the group (may be "" when unknown). */
+  region: string;
+  /** Stable identity for the group, unique per (account, region). */
+  key: string;
+  items: T[];
+}
+
+/**
+ * Split usage or priced result items into groups that each represent a single
+ * storage account in a single region. Multiple accounts in one upload become
+ * separate groups so they can be imported as individual portfolio assessments,
+ * and an account that appears in more than one region is split per region so
+ * each group is priced and labelled with that region's own data. Items whose
+ * region is blank are absorbed into their account's most common region so data
+ * gaps do not create noise groups. Input order is preserved by first appearance.
+ */
+export function groupByAccountAndRegion<T>(
+  items: T[],
+  getRawAccount: (item: T) => string | null | undefined,
+  getRegion: (item: T) => string | null | undefined
+): AccountRegionGroup<T>[] {
+  const accountOf = new Map<T, string | undefined>();
+  const regionOf = new Map<T, string>();
+  for (const item of items) {
+    accountOf.set(item, extractStorageAccountName(getRawAccount(item)));
+    regionOf.set(item, (getRegion(item) ?? "").trim());
+  }
+
+  // First pass: most common non-empty region per account.
+  const regionCounts = new Map<string, Map<string, number>>();
+  for (const item of items) {
+    const region = regionOf.get(item) ?? "";
+    if (!region) continue;
+    const accountKey = accountOf.get(item) ?? "";
+    const counts = regionCounts.get(accountKey) ?? new Map<string, number>();
+    counts.set(region, (counts.get(region) ?? 0) + 1);
+    regionCounts.set(accountKey, counts);
+  }
+  const dominantRegion = new Map<string, string>();
+  for (const [accountKey, counts] of regionCounts) {
+    let best = "";
+    let bestCount = 0;
+    for (const [region, count] of counts) {
+      if (count > bestCount) {
+        best = region;
+        bestCount = count;
+      }
+    }
+    dominantRegion.set(accountKey, best);
+  }
+
+  // Second pass: bucket by (account, resolved region), preserving first-seen order.
+  const groups = new Map<string, AccountRegionGroup<T>>();
+  const order: string[] = [];
+  for (const item of items) {
+    const account = accountOf.get(item);
+    const accountKey = account ?? "";
+    const region = (regionOf.get(item) || dominantRegion.get(accountKey)) ?? "";
+    const key = `${accountKey}|${region}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { account, region, key, items: [] };
+      groups.set(key, group);
+      order.push(key);
+    }
+    group.items.push(item);
+  }
+  return order.map((key) => groups.get(key) as AccountRegionGroup<T>);
+}
