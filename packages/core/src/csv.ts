@@ -39,6 +39,7 @@ const columnAliases: Record<string, string[]> = {
   "Meter category": ["Meter category", "MeterCategory", "Meter category name"],
   "Meter subcategory": ["Meter subcategory", "MeterSubCategory", "Meter subcategory", "MeterSubcategory"],
   "Meter name": ["Meter name", "MeterName"],
+  "Meter id": ["Meter id", "MeterId", "Meter ID", "MeterID", "MeterGuid"],
   "SKU name": ["SKU name", "SkuName", "SKUName", "Sku", "SKU"],
   Region: ["Region", "ResourceLocation", "Resource location", "ResourceLocationNormalized", "MeterRegion"],
   Quantity: ["Quantity", "UsageQuantity", "Usage quantity"],
@@ -46,7 +47,14 @@ const columnAliases: Record<string, string[]> = {
   "Unit price": ["Unit price", "UnitPrice", "EffectivePrice", "PayGPrice"],
   Cost: ["Cost", "CostInBillingCurrency", "PreTaxCost", "CostInPricingCurrency"],
   Currency: ["Currency", "BillingCurrency", "BillingCurrencyCode", "PricingCurrency"],
-  "Tags or storage account name": ["Tags or storage account name", "Tags", "ResourceName", "ResourceId", "InstanceName"]
+  // The ARM resource id/name identify the actual storage account and take priority
+  // over tags when deriving an account, since tags are frequently governance blobs
+  // (owner, cost centre, "Do Not Delete") that contain no account name.
+  "Resource id": ["Resource id", "ResourceId", "Resource ID", "InstanceId", "Instance id"],
+  "Resource name": ["Resource name", "ResourceName", "InstanceName", "Instance name"],
+  // Kept broad so the account-identity requirement is satisfied by any of these
+  // columns; the resource id/name above are preferred when present.
+  "Tags or storage account name": ["Tags or storage account name", "Tags", "ResourceId", "ResourceName", "InstanceId", "InstanceName"]
 };
 
 // Azure exports vary in header casing and punctuation (e.g. "MeterSubCategory",
@@ -69,6 +77,19 @@ function resolveHeader(headers: string[], canonical: string): string | undefined
 function read(row: Record<string, string>, headers: string[], key: string): string {
   const resolved = resolveHeader(headers, key);
   return (resolved ? row[resolved] || "" : "").trim();
+}
+
+// Pick the best raw value to derive a storage account from. The ARM resource id
+// (e.g. ".../storageAccounts/<name>") and resource/instance name are authoritative,
+// so they win over the tags column, which is often governance metadata with no
+// account name. Falls back to the first non-empty source, then "".
+function deriveAccountSource(row: Record<string, string>, headers: string[]): string {
+  const sources = [
+    read(row, headers, "Resource id"),
+    read(row, headers, "Resource name"),
+    read(row, headers, "Tags or storage account name")
+  ];
+  return sources.find((source) => extractStorageAccountName(source)) ?? sources.find((source) => source) ?? "";
 }
 
 function toNumber(value: string): number {
@@ -118,13 +139,14 @@ export function parseUsageCsv(csvText: string): CsvParseResult {
       meterSubcategory,
       meterName,
       skuName,
+      meterId: read(row, headers, "Meter id") || undefined,
       region: read(row, headers, "Region"),
       quantity: toNumber(read(row, headers, "Quantity")),
       unit: read(row, headers, "Unit"),
       unitPrice: toNumber(read(row, headers, "Unit price")),
       cost: toNumber(read(row, headers, "Cost")),
       currency: read(row, headers, "Currency") || "USD",
-      storageAccountName: read(row, headers, "Tags or storage account name"),
+      storageAccountName: deriveAccountSource(row, headers),
       sourceAccountKind: "Storage",
       targetAccountKind: "StorageV2",
       redundancy: inferRedundancy(text),

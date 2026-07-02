@@ -144,6 +144,49 @@ describe("classification and matching", () => {
     expect(matchMeter(capacity, [storageV2HotMeter, storageV2CoolMeter], "gpv2").meter?.meterId).toBe("storage-v2-cool");
   });
 
+  it("pins the GPv1 price to the exact billed meter id from the export", () => {
+    const billed = { ...usage, meterId: "abc-123" };
+    const candidates = [
+      meter({ meterId: "abc-123", productName: "General Block Blob", tierMinimumUnits: 0, retailPrice: 0.02 }),
+      meter({ meterId: "abc-123", productName: "General Block Blob", tierMinimumUnits: 51200, retailPrice: 0.018 }),
+      meter({ meterId: "zzz-999", productName: "General Block Blob" })
+    ];
+    const match = matchMeter(billed, candidates, "gpv1");
+
+    expect(match.confidence).toBe("Exact match");
+    expect(match.meter?.meterId).toBe("abc-123");
+    expect(match.meter?.tierMinimumUnits).toBe(0);
+    expect(match.candidates).toHaveLength(2);
+  });
+
+  it("trusts the billed meter id even when the product text would not score", () => {
+    const billed = { ...usage, meterId: "id-match" };
+    const match = matchMeter(billed, [meter({ meterId: "ID-Match", productName: "Tables" })], "gpv1");
+
+    expect(match.confidence).toBe("Exact match");
+    expect(match.meter?.meterId).toBe("ID-Match");
+  });
+
+  it("falls back to fuzzy GPv1 matching when the billed meter id is absent from the price list", () => {
+    const billed = { ...usage, meterId: "not-present" };
+    const match = matchMeter(
+      billed,
+      [meter({ productName: "General Block Blob", meterName: "Hot LRS Data Stored", skuName: "Standard LRS", meterId: "meter-1" })],
+      "gpv1"
+    );
+
+    expect(match.meter?.meterId).toBe("meter-1");
+    expect(match.confidence).not.toBe("Unmatched");
+    expect(match.notes.join(" ")).not.toContain("Matched the billed meter by ID");
+  });
+
+  it("does not apply the export meter id to the GPv2 target", () => {
+    const billed = { ...usage, meterId: "meter-1" };
+    const match = matchMeter(billed, [meter({ meterId: "meter-1", productName: "General Block Blob" })], "gpv2");
+
+    expect(match.confidence).toBe("Unmatched");
+  });
+
   it("includes StorageV2-only meters with GPv1 cost set to zero", () => {
     const replication = manualInputToUsage({ ...defaultManualInput, writeGb: 25, redundancy: "GRS" }).find((item) => item.id === "manual-geo-transfer")!;
     const gpV1 = matchMeter(replication, [meter({ productName: "General Block Blob", meterName: "GRS Data Stored", skuName: "Standard GRS" })], "gpv1");
@@ -304,6 +347,50 @@ describe("CSV parsing", () => {
 
     expect(result.rows).toHaveLength(MAX_CSV_ROWS);
     expect(result.errors.join(" ")).toContain("Only the first");
+  });
+
+  it("captures the billed meter id when the export includes one", () => {
+    const csv = [
+      "UsageDate,ConsumedService,ProductName,MeterCategory,MeterSubCategory,MeterName,SkuName,ResourceLocation,UsageQuantity,UnitOfMeasure,EffectivePrice,CostInBillingCurrency,BillingCurrency,MeterId,ResourceName",
+      "2026-05-01,Storage,General Block Blob,Storage,Blob Storage,Hot LRS Data Stored,Standard LRS,eastus,100,1 GB/Month,0.02,2,USD,11111111-2222-3333-4444-555555555555,prodgpv1"
+    ].join("\n");
+    const result = parseUsageCsv(csv);
+
+    expect(result.rows[0].meterId).toBe("11111111-2222-3333-4444-555555555555");
+  });
+
+  it("leaves the meter id undefined when the export omits it", () => {
+    const csv = [
+      "UsageDate,ConsumedService,ProductName,MeterCategory,MeterSubCategory,MeterName,SkuName,ResourceLocation,UsageQuantity,UnitOfMeasure,EffectivePrice,CostInBillingCurrency,BillingCurrency,ResourceName",
+      "2026-05-01,Storage,General Block Blob,Storage,Blob Storage,LRS Data Stored,Standard LRS,eastus,100,1 GB/Month,0.02,2,USD,prodgpv1"
+    ].join("\n");
+    const result = parseUsageCsv(csv);
+
+    expect(result.rows[0].meterId).toBeUndefined();
+  });
+
+  it("prefers the ARM resource id over tags when identifying the storage account", () => {
+    const header = "date,consumedService,ProductName,meterCategory,meterSubCategory,meterName,resourceLocation,quantity,unitOfMeasure,effectivePrice,costInBillingCurrency,billingCurrency,ResourceId,tags";
+    const row = "2026-06-01,Microsoft.Storage,General Block Blob,Storage,Blob Storage,Hot LRS Data Stored,eastus,100,1 GB/Month,0.02,2,USD,/subscriptions/s/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/realaccount,account=tagaccount";
+    const result = parseUsageCsv([header, row].join("\n"));
+
+    expect(result.errors).toEqual([]);
+    expect(extractStorageAccountName(result.rows[0].storageAccountName)).toBe("realaccount");
+  });
+
+  it("splits multiple accounts from a raw cost export into separate groups", () => {
+    const header = "date,consumedService,ProductName,meterCategory,meterSubCategory,meterName,resourceLocation,quantity,unitOfMeasure,effectivePrice,costInBillingCurrency,billingCurrency,ResourceId,tags";
+    const mk = (acct: string, region: string) =>
+      `2026-06-01,Microsoft.Storage,General Block Blob,Storage,Blob Storage,Hot LRS Data Stored,${region},100,1 GB/Month,0.02,2,USD,/subscriptions/s/resourceGroups/rg/providers/Microsoft.Storage/storageAccounts/${acct},{}`;
+    const result = parseUsageCsv([header, mk("alpha", "eastus"), mk("beta", "westus2"), mk("alpha", "eastus")].join("\n"));
+    const groups = groupByAccountAndRegion(
+      result.rows.filter((row) => row.modeled),
+      (row) => row.storageAccountName,
+      (row) => row.region
+    );
+
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.account).sort()).toEqual(["alpha", "beta"]);
   });
 
   it("escapes spreadsheet formula controls in CSV export", () => {
