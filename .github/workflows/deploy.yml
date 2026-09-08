@@ -15,9 +15,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '20'
           cache: 'npm'
@@ -36,7 +36,7 @@ jobs:
       #   3. Copy the token and add it as a repository secret named
       #      AZURE_STATIC_WEB_APPS_API_TOKEN (Settings → Secrets → Actions).
       - name: Deploy to Azure Static Web Apps
-        uses: azure/static-web-apps-deploy@v1
+        uses: azure/static-web-apps-deploy@4d27395796ac319302594769cfe812bd207490b1 # v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
