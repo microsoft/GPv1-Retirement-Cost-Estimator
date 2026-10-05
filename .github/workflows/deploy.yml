@@ -36,7 +36,7 @@ jobs:
       #   3. Copy the token and add it as a repository secret named
       #      AZURE_STATIC_WEB_APPS_API_TOKEN (Settings → Secrets → Actions).
       - name: Deploy to Azure Static Web Apps
-        uses: azure/static-web-apps-deploy@v1
+        uses: azure/static-web-apps-deploy@1a947af9992250f3bc2e68ad0754c0b0c11566c9 # v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           repo_token: ${{ secrets.GITHUB_TOKEN }}
