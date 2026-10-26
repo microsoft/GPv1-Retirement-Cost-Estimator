@@ -9,7 +9,7 @@
     "start": "func start"
   },
   "dependencies": {
-    "@azure/functions": "^4.16.1"
+    "@azure/functions": "^4.17.0"
   },
   "devDependencies": {
     "@gpv2-estimator/core": "file:../../packages/core",
